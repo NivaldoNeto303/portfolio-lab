@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+yfinance
+# Testing
+pytest
+httpx
