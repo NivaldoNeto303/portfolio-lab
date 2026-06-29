@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import date
+from typing import Literal
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
-from app import data, metrics
+from app import backtest, data, metrics
 from app.db import engine, get_session, init_db
 from app.models import Asset, AssetKind, Price
 
@@ -165,12 +166,12 @@ def _load_adj_close(
 
 
 def _risk_free_daily(
-    req: AnalyzeRequest, index: pd.DatetimeIndex
+    risk_free_annual: float | None, index: pd.DatetimeIndex
 ) -> tuple[float | pd.Series, str]:
     """Resolve the daily risk-free rate and a human-readable note about its source."""
-    if req.risk_free_annual is not None:
-        daily = (1.0 + req.risk_free_annual) ** (1.0 / metrics.TRADING_DAYS) - 1.0
-        return daily, f"manual risk_free_annual={req.risk_free_annual}"
+    if risk_free_annual is not None:
+        daily = (1.0 + risk_free_annual) ** (1.0 / metrics.TRADING_DAYS) - 1.0
+        return daily, f"manual risk_free_annual={risk_free_annual}"
 
     # Default: fetch the CDI; fall back to rf=0 if BCB is unreachable.
     start = index.min().date()
@@ -181,6 +182,17 @@ def _risk_free_daily(
         return 0.0, f"CDI unavailable ({exc}); used rf=0"
     rf = pd.Series({pd.Timestamp(d): v for d, v in cdi.items()}, dtype="float64")
     return rf, "CDI (BCB SGS series 12)"
+
+
+def _metrics_block(returns: pd.Series, rf_daily: float | pd.Series) -> dict:
+    """The standard set of return/risk metrics for one return series."""
+    return {
+        "cumulative_return": metrics.cumulative_return(returns),
+        "annualized_return": metrics.annualized_return(returns),
+        "annualized_volatility": metrics.annualized_volatility(returns),
+        "sharpe_ratio": metrics.sharpe_ratio(returns, rf_daily),
+        "max_drawdown": metrics.max_drawdown(returns),
+    }
 
 
 @app.post("/portfolio/analyze")
@@ -217,20 +229,12 @@ def analyze_portfolio(
             detail="Not enough overlapping price history to compute returns.",
         )
 
-    rf_daily, rf_note = _risk_free_daily(req, returns_df.index)
+    rf_daily, rf_note = _risk_free_daily(req.risk_free_annual, returns_df.index)
     port_ret = metrics.portfolio_returns(returns_df, weights)
 
-    def _metrics_block(returns: pd.Series) -> dict:
-        return {
-            "cumulative_return": metrics.cumulative_return(returns),
-            "annualized_return": metrics.annualized_return(returns),
-            "annualized_volatility": metrics.annualized_volatility(returns),
-            "sharpe_ratio": metrics.sharpe_ratio(returns, rf_daily),
-            "max_drawdown": metrics.max_drawdown(returns),
-        }
-
     per_asset = {
-        ticker: _metrics_block(returns_df[ticker]) for ticker in returns_df.columns
+        ticker: _metrics_block(returns_df[ticker], rf_daily)
+        for ticker in returns_df.columns
     }
     corr = metrics.correlation_matrix(returns_df)
 
@@ -243,9 +247,103 @@ def analyze_portfolio(
             "trading_days": int(len(returns_df)),
         },
         "risk_free": rf_note,
-        "portfolio": _metrics_block(port_ret),
+        "portfolio": _metrics_block(port_ret, rf_daily),
         "assets": per_asset,
         "correlation": {
             col: corr[col].round(4).to_dict() for col in corr.columns
         },
     }
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — Backtester
+# --------------------------------------------------------------------------- #
+
+
+class BacktestRequest(BaseModel):
+    strategy: Literal["ma_crossover", "monthly_rebalance"]
+    start: date | None = None
+    end: date | None = None
+    risk_free_annual: float | None = None
+    # ma_crossover params
+    ticker: str | None = None
+    short_window: int = 20
+    long_window: int = 50
+    # monthly_rebalance params
+    holdings: list[Holding] | None = None
+
+
+def _equity_payload(returns: pd.Series) -> list[float]:
+    """Equity curve as a plain list, rounded for a compact JSON response."""
+    return [round(v, 6) for v in metrics.equity_curve(returns)]
+
+
+def _backtest_result(
+    strategy_ret: pd.Series,
+    buy_hold_ret: pd.Series,
+    rf_annual: float | None,
+) -> dict:
+    """Assemble the comparison payload (metrics + curves) for the dashboard."""
+    rf_daily, rf_note = _risk_free_daily(rf_annual, strategy_ret.index)
+    dates = [ts.date().isoformat() for ts in strategy_ret.index]
+    return {
+        "risk_free": rf_note,
+        "dates": dates,
+        "strategy": {
+            "metrics": _metrics_block(strategy_ret, rf_daily),
+            "equity": _equity_payload(strategy_ret),
+            "drawdown": [round(v, 6) for v in metrics.drawdown_series(strategy_ret)],
+        },
+        "buy_and_hold": {
+            "metrics": _metrics_block(buy_hold_ret, rf_daily),
+            "equity": _equity_payload(buy_hold_ret),
+            "drawdown": [round(v, 6) for v in metrics.drawdown_series(buy_hold_ret)],
+        },
+    }
+
+
+@app.post("/backtest")
+def run_backtest(
+    req: BacktestRequest, session: Session = Depends(get_session)
+) -> dict:
+    """Backtest a strategy against buy-and-hold over stored prices."""
+    if req.strategy == "ma_crossover":
+        if not req.ticker:
+            raise HTTPException(400, "ma_crossover requires a 'ticker'.")
+        ticker = req.ticker.upper()
+        prices = _load_adj_close(session, ticker, req.start, req.end)
+        if prices.empty:
+            raise HTTPException(400, f"No stored prices for {ticker!r}; sync it first.")
+        try:
+            strat, bh = backtest.ma_crossover(prices, req.short_window, req.long_window)
+        except backtest.BacktestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        meta = {
+            "ticker": ticker,
+            "short_window": req.short_window,
+            "long_window": req.long_window,
+        }
+    else:  # monthly_rebalance
+        if not req.holdings:
+            raise HTTPException(400, "monthly_rebalance requires 'holdings'.")
+        prices_by_ticker: dict[str, pd.Series] = {}
+        missing: list[str] = []
+        for h in req.holdings:
+            t = h.ticker.upper()
+            series = _load_adj_close(session, t, req.start, req.end)
+            if series.empty:
+                missing.append(t)
+            else:
+                prices_by_ticker[t] = series
+        if missing:
+            raise HTTPException(400, f"No stored prices for {missing}; sync them first.")
+        weights = {h.ticker.upper(): h.weight for h in req.holdings}
+        try:
+            strat, bh = backtest.monthly_rebalance(prices_by_ticker, weights)
+        except backtest.BacktestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        total = sum(weights.values())
+        meta = {"weights": {t: w / total for t, w in weights.items()}}
+
+    result = _backtest_result(strat, bh, req.risk_free_annual)
+    return {"strategy_name": req.strategy, **meta, **result}

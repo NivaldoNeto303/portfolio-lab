@@ -71,14 +71,22 @@ def sharpe_ratio(
     return float((excess.mean() / vol) * np.sqrt(periods))
 
 
+def equity_curve(returns: pd.Series) -> pd.Series:
+    """Compounded growth of 1 unit invested (e.g. 1.0 -> 1.25 for +25%)."""
+    return (1.0 + returns).cumprod()
+
+
+def drawdown_series(returns: pd.Series) -> pd.Series:
+    """Per-date drawdown of the equity curve (0 at peaks, negative below)."""
+    equity = equity_curve(returns)
+    return equity / equity.cummax() - 1.0
+
+
 def max_drawdown(returns: pd.Series) -> float:
     """Largest peak-to-trough drop of the equity curve (negative, e.g. -0.30)."""
     if returns.empty:
         return 0.0
-    equity = (1.0 + returns).cumprod()
-    peak = equity.cummax()
-    drawdown = equity / peak - 1.0
-    return float(drawdown.min())
+    return float(drawdown_series(returns).min())
 
 
 def returns_frame(prices_by_ticker: dict[str, pd.Series]) -> pd.DataFrame:

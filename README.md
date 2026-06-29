@@ -17,7 +17,8 @@ Built in phases:
   idempotent syncs.
 - [x] **Phase 2 — Portfolio metrics:** return, volatility, Sharpe, drawdown,
   correlation, with the CDI as the risk-free rate.
-- [ ] Phase 3 — Backtester (strategy vs. buy-and-hold).
+- [x] **Phase 3 — Backtester:** moving-average crossover and monthly
+  rebalancing, each compared against buy-and-hold.
 - [ ] Phase 4 — Dashboard (Chart.js) & polish.
 
 ## Tech stack
@@ -52,6 +53,7 @@ The API is then available at `http://127.0.0.1:8000`, with interactive docs at
 | `GET`  | `/assets/{ticker}/prices`         | Return the stored price series (`start`/`end` optional). |
 | `GET`  | `/assets`                         | List tracked tickers.                        |
 | `POST` | `/portfolio/analyze`              | Return/risk metrics for a weighted portfolio. |
+| `POST` | `/backtest`                       | Strategy vs. buy-and-hold (metrics + curves). |
 
 Syncs are idempotent: re-running a sync updates existing rows instead of
 duplicating them (unique constraint on `(ticker, date)`).
@@ -84,6 +86,30 @@ curl -X POST "http://127.0.0.1:8000/portfolio/analyze" \
         ],
         "start": "2023-01-01",
         "end": "2023-12-31"
+      }'
+```
+
+### Backtesting
+
+`POST /backtest` runs a strategy over stored prices and compares it to
+buy-and-hold, returning metrics plus equity and drawdown curves for charting.
+
+- `strategy: "ma_crossover"` — single asset; long while the short moving
+  average is above the long one, otherwise in cash (params: `ticker`,
+  `short_window`, `long_window`). The position acts on the day after the signal
+  forms, so there is no look-ahead.
+- `strategy: "monthly_rebalance"` — a weighted portfolio reset to its target
+  weights each month, versus the same weights left to drift (param: `holdings`).
+
+```bash
+curl -X POST "http://127.0.0.1:8000/backtest" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "strategy": "ma_crossover",
+        "ticker": "PETR4.SA",
+        "short_window": 20,
+        "long_window": 50,
+        "start": "2021-01-01"
       }'
 ```
 
