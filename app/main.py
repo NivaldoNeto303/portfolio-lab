@@ -11,11 +11,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import date
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
-from app import data
+from app import data, metrics
 from app.db import engine, get_session, init_db
 from app.models import Asset, AssetKind, Price
 
@@ -127,3 +129,123 @@ def get_prices(
 def list_assets(session: Session = Depends(get_session)) -> list[Asset]:
     """List tracked assets."""
     return session.exec(select(Asset).order_by(Asset.ticker)).all()
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 — Portfolio metrics
+# --------------------------------------------------------------------------- #
+
+
+class Holding(BaseModel):
+    ticker: str
+    weight: float = Field(gt=0, description="Relative weight; normalized to sum to 1.")
+
+
+class AnalyzeRequest(BaseModel):
+    holdings: list[Holding] = Field(min_length=1)
+    start: date | None = None
+    end: date | None = None
+    # If omitted, the CDI is fetched from BCB and used as the risk-free rate.
+    risk_free_annual: float | None = None
+
+
+def _load_adj_close(
+    session: Session, ticker: str, start: date | None, end: date | None
+) -> pd.Series:
+    """Load the stored adjusted-close series for a ticker as a date-indexed Series."""
+    query = select(Price).where(Price.ticker == ticker)
+    if start is not None:
+        query = query.where(Price.date >= start)
+    if end is not None:
+        query = query.where(Price.date <= end)
+    rows = session.exec(query.order_by(Price.date)).all()
+    return pd.Series(
+        {pd.Timestamp(r.date): r.adj_close for r in rows}, dtype="float64"
+    )
+
+
+def _risk_free_daily(
+    req: AnalyzeRequest, index: pd.DatetimeIndex
+) -> tuple[float | pd.Series, str]:
+    """Resolve the daily risk-free rate and a human-readable note about its source."""
+    if req.risk_free_annual is not None:
+        daily = (1.0 + req.risk_free_annual) ** (1.0 / metrics.TRADING_DAYS) - 1.0
+        return daily, f"manual risk_free_annual={req.risk_free_annual}"
+
+    # Default: fetch the CDI; fall back to rf=0 if BCB is unreachable.
+    start = index.min().date()
+    end = index.max().date()
+    try:
+        cdi = data.fetch_cdi(start=start, end=end)
+    except data.DataError as exc:
+        return 0.0, f"CDI unavailable ({exc}); used rf=0"
+    rf = pd.Series({pd.Timestamp(d): v for d, v in cdi.items()}, dtype="float64")
+    return rf, "CDI (BCB SGS series 12)"
+
+
+@app.post("/portfolio/analyze")
+def analyze_portfolio(
+    req: AnalyzeRequest, session: Session = Depends(get_session)
+) -> dict:
+    """Compute return/risk metrics for a weighted portfolio from stored prices."""
+    tickers = [h.ticker.upper() for h in req.holdings]
+
+    prices: dict[str, pd.Series] = {}
+    missing: list[str] = []
+    for ticker in tickers:
+        series = _load_adj_close(session, ticker, req.start, req.end)
+        if series.empty:
+            missing.append(ticker)
+        else:
+            prices[ticker] = series
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No stored prices for {missing}; sync these tickers first.",
+        )
+
+    # Normalize weights to sum to 1 (note it if the input didn't already).
+    raw_weights = {h.ticker.upper(): h.weight for h in req.holdings}
+    total = sum(raw_weights.values())
+    weights = {t: w / total for t, w in raw_weights.items()}
+    normalized = abs(total - 1.0) > 1e-9
+
+    returns_df = metrics.returns_frame(prices)
+    if returns_df.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough overlapping price history to compute returns.",
+        )
+
+    rf_daily, rf_note = _risk_free_daily(req, returns_df.index)
+    port_ret = metrics.portfolio_returns(returns_df, weights)
+
+    def _metrics_block(returns: pd.Series) -> dict:
+        return {
+            "cumulative_return": metrics.cumulative_return(returns),
+            "annualized_return": metrics.annualized_return(returns),
+            "annualized_volatility": metrics.annualized_volatility(returns),
+            "sharpe_ratio": metrics.sharpe_ratio(returns, rf_daily),
+            "max_drawdown": metrics.max_drawdown(returns),
+        }
+
+    per_asset = {
+        ticker: _metrics_block(returns_df[ticker]) for ticker in returns_df.columns
+    }
+    corr = metrics.correlation_matrix(returns_df)
+
+    return {
+        "weights": weights,
+        "weights_normalized": normalized,
+        "period": {
+            "start": returns_df.index.min().date().isoformat(),
+            "end": returns_df.index.max().date().isoformat(),
+            "trading_days": int(len(returns_df)),
+        },
+        "risk_free": rf_note,
+        "portfolio": _metrics_block(port_ret),
+        "assets": per_asset,
+        "correlation": {
+            col: corr[col].round(4).to_dict() for col in corr.columns
+        },
+    }

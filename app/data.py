@@ -10,10 +10,17 @@ prices, but storing the raw close too keeps the data faithful to the source.
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 import yfinance as yf
+
+# Brazilian Central Bank SGS API, series 12 = daily CDI rate (% per day).
+# Free, no token. Docs: https://dadosabertos.bcb.gov.br/
+BCB_SGS_CDI_URL = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados?formato=json"
 
 
 class DataError(Exception):
@@ -97,3 +104,42 @@ def fetch_history(ticker: str, start: str | None = None) -> list[PriceRow]:
         raise DataError(f"No usable price rows for {ticker!r}")
 
     return rows
+
+
+def fetch_cdi(start: date | None = None, end: date | None = None) -> dict[date, float]:
+    """Fetch the daily CDI rate from the Brazilian Central Bank (SGS series 12).
+
+    Returns a mapping ``{date: daily_rate}`` where the rate is a decimal per day
+    (e.g. 0.00041 for 0.041% a.d.). Used as the risk-free rate for the Sharpe
+    ratio. Raises :class:`DataError` on any failure so the caller can fall back
+    to rf=0 gracefully.
+    """
+    url = BCB_SGS_CDI_URL
+    if start is not None:
+        url += f"&dataInicial={start.strftime('%d/%m/%Y')}"
+    if end is not None:
+        url += f"&dataFinal={end.strftime('%d/%m/%Y')}"
+
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        raise DataError(f"Failed to fetch CDI from BCB: {exc}") from exc
+
+    if not raw:
+        raise DataError("BCB returned no CDI data for the requested range")
+
+    series: dict[date, float] = {}
+    for item in raw:
+        try:
+            day = datetime.strptime(item["data"], "%d/%m/%Y").date()
+            # SGS reports the rate as a percent per day; convert to a decimal.
+            series[day] = float(item["valor"]) / 100.0
+        except (KeyError, ValueError):
+            # Skip any malformed record rather than failing the whole fetch.
+            continue
+
+    if not series:
+        raise DataError("No usable CDI rows returned by BCB")
+
+    return series

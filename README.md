@@ -15,8 +15,8 @@ Built in phases:
 
 - [x] **Phase 1 — Data layer:** fetch & persist historical daily prices, with
   idempotent syncs.
-- [ ] Phase 2 — Portfolio metrics (return, volatility, Sharpe, drawdown,
-  correlation).
+- [x] **Phase 2 — Portfolio metrics:** return, volatility, Sharpe, drawdown,
+  correlation, with the CDI as the risk-free rate.
 - [ ] Phase 3 — Backtester (strategy vs. buy-and-hold).
 - [ ] Phase 4 — Dashboard (Chart.js) & polish.
 
@@ -44,15 +44,17 @@ uvicorn app.main:app --reload
 The API is then available at `http://127.0.0.1:8000`, with interactive docs at
 `http://127.0.0.1:8000/docs`.
 
-## API (Phase 1)
+## API
 
 | Method | Path                              | Description                                  |
 | ------ | --------------------------------- | -------------------------------------------- |
 | `POST` | `/assets/{ticker}/sync`           | Fetch from yfinance and upsert into the DB.  |
 | `GET`  | `/assets/{ticker}/prices`         | Return the stored price series (`start`/`end` optional). |
 | `GET`  | `/assets`                         | List tracked tickers.                        |
+| `POST` | `/portfolio/analyze`              | Return/risk metrics for a weighted portfolio. |
 
-Example:
+Syncs are idempotent: re-running a sync updates existing rows instead of
+duplicating them (unique constraint on `(ticker, date)`).
 
 ```bash
 # Sync ~1 year of Petrobras prices, then read them back
@@ -61,8 +63,29 @@ curl "http://127.0.0.1:8000/assets/PETR4.SA/prices?start=2023-01-01"
 curl "http://127.0.0.1:8000/assets"
 ```
 
-Syncs are idempotent: re-running a sync updates existing rows instead of
-duplicating them (unique constraint on `(ticker, date)`).
+### Portfolio analysis
+
+`POST /portfolio/analyze` computes cumulative/annualized return, annualized
+volatility, Sharpe ratio, max drawdown, and the correlation matrix from prices
+already stored in the DB (sync the tickers first; unknown tickers return `400`).
+
+Metrics use adjusted close and 252 trading days for annualization. The
+**risk-free rate** for the Sharpe ratio defaults to the **CDI**, fetched live
+from the Brazilian Central Bank (BCB SGS series 12); pass `risk_free_annual` to
+override it, and if BCB is unreachable the API falls back to `rf=0` and says so.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/portfolio/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "holdings": [
+          {"ticker": "PETR4.SA", "weight": 0.6},
+          {"ticker": "HGLG11.SA", "weight": 0.4}
+        ],
+        "start": "2023-01-01",
+        "end": "2023-12-31"
+      }'
+```
 
 ## Tests
 
