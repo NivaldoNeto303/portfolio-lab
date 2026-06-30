@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 from typing import Literal
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
@@ -21,6 +23,8 @@ from sqlmodel import Session, select
 from app import backtest, data, metrics
 from app.db import engine, get_session, init_db
 from app.models import Asset, AssetKind, Price
+
+DASHBOARD_HTML = Path(__file__).parent / "templates" / "dashboard.html"
 
 
 @asynccontextmanager
@@ -30,6 +34,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Portfolio Lab", lifespan=lifespan)
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    """Serve the single-page Chart.js dashboard (Phase 4)."""
+    return FileResponse(DASHBOARD_HTML)
 
 
 def _infer_kind(ticker: str) -> AssetKind:

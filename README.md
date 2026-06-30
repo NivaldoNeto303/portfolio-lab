@@ -19,7 +19,8 @@ Built in phases:
   correlation, with the CDI as the risk-free rate.
 - [x] **Phase 3 — Backtester:** moving-average crossover and monthly
   rebalancing, each compared against buy-and-hold.
-- [ ] Phase 4 — Dashboard (Chart.js) & polish.
+- [x] **Phase 4 — Dashboard:** a single-page Chart.js UI (equity curve,
+  drawdown, allocation, correlation heatmap).
 
 ## Tech stack
 
@@ -42,8 +43,27 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-The API is then available at `http://127.0.0.1:8000`, with interactive docs at
-`http://127.0.0.1:8000/docs`.
+Then open:
+
+- `http://127.0.0.1:8000` — the **dashboard** (see below).
+- `http://127.0.0.1:8000/docs` — interactive API docs (Swagger UI).
+
+## Dashboard
+
+The dashboard at `/` is a single page that drives the JSON API and renders the
+results with Chart.js. Because metrics are computed from prices already in the
+DB, use the panels in order:
+
+1. **Sync prices** — fetch and store one ticker at a time (e.g. `PETR4.SA`,
+   `VALE3.SA`, `HGLG11.SA`).
+2. **Portfolio** — enter holdings as `TICKER weight` per line and **Analyze** to
+   fill the allocation doughnut, correlation heatmap, and metrics table.
+3. **Backtest** — pick `monthly_rebalance` (uses the holdings) or `ma_crossover`
+   (single ticker) and **Run backtest** to plot the equity and drawdown curves,
+   strategy vs. buy-and-hold.
+
+> Chart.js is loaded from a CDN, so the browser needs internet to render the
+> charts; the API itself runs fully locally.
 
 ## API
 

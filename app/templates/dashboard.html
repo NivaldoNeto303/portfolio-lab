@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Portfolio Lab</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    :root { --bg:#0f1620; --panel:#18222f; --line:#27384a; --fg:#e6edf3; --muted:#90a4b8; --accent:#4ea1ff; --good:#3ecf8e; --bad:#ff6b6b; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, sans-serif; }
+    header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
+    header h1 { margin:0; font-size:20px; }
+    header span { color:var(--muted); font-size:13px; }
+    main { display:grid; grid-template-columns: 320px 1fr; gap:0; }
+    aside { padding:20px; border-right:1px solid var(--line); min-height:calc(100vh - 61px); }
+    section.content { padding:20px 24px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:18px; }
+    .panel h2 { margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+    label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+    input, select, textarea { width:100%; background:#0e1722; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:7px 9px; font:inherit; }
+    textarea { resize:vertical; min-height:64px; font-family:ui-monospace, monospace; }
+    button { margin-top:10px; width:100%; background:var(--accent); color:#04101d; border:0; border-radius:6px; padding:9px; font-weight:600; cursor:pointer; }
+    button.secondary { background:#27384a; color:var(--fg); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .row { display:flex; gap:8px; }
+    .row > * { flex:1; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .chart-box { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+    .chart-box h3 { margin:0 0 10px; font-size:13px; color:var(--muted); font-weight:600; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); }
+    th:first-child, td:first-child { text-align:left; }
+    thead th { color:var(--muted); font-weight:600; }
+    .pos { color:var(--good); } .neg { color:var(--bad); }
+    .muted { color:var(--muted); }
+    .status { font-size:12px; margin-top:8px; min-height:16px; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .chip { background:#0e1722; border:1px solid var(--line); border-radius:12px; padding:2px 9px; font-size:12px; }
+    .heatmap td { text-align:center; color:#04101d; font-weight:600; border:1px solid var(--bg); }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Portfolio Lab</h1>
+    <span>B3 portfolio analysis &amp; backtesting</span>
+  </header>
+  <main>
+    <aside>
+      <div class="panel">
+        <h2>1 · Sync prices</h2>
+        <label>Ticker (B3, e.g. PETR4.SA)</label>
+        <input id="sync-ticker" placeholder="PETR4.SA" />
+        <label>Start date</label>
+        <input id="sync-start" type="date" value="2021-01-01" />
+        <button id="sync-btn">Fetch &amp; store</button>
+        <div class="status" id="sync-status"></div>
+        <div class="chips" id="asset-chips"></div>
+      </div>
+
+      <div class="panel">
+        <h2>2 · Portfolio</h2>
+        <label>Holdings — one "TICKER weight" per line</label>
+        <textarea id="holdings">PETR4.SA 0.4
+VALE3.SA 0.3
+HGLG11.SA 0.3</textarea>
+        <div class="row">
+          <div><label>Start</label><input id="an-start" type="date" value="2021-01-01" /></div>
+          <div><label>End</label><input id="an-end" type="date" /></div>
+        </div>
+        <button id="analyze-btn">Analyze</button>
+        <div class="status" id="analyze-status"></div>
+      </div>
+
+      <div class="panel">
+        <h2>3 · Backtest</h2>
+        <label>Strategy</label>
+        <select id="bt-strategy">
+          <option value="monthly_rebalance">Monthly rebalance (uses holdings)</option>
+          <option value="ma_crossover">MA crossover (single ticker)</option>
+        </select>
+        <div id="bt-ma" class="hidden">
+          <label>Ticker</label>
+          <input id="bt-ticker" placeholder="PETR4.SA" />
+          <div class="row">
+            <div><label>Short</label><input id="bt-short" type="number" value="20" /></div>
+            <div><label>Long</label><input id="bt-long" type="number" value="50" /></div>
+          </div>
+        </div>
+        <button id="backtest-btn">Run backtest</button>
+        <div class="status" id="backtest-status"></div>
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="grid2">
+        <div class="chart-box">
+          <h3>Equity curve — strategy vs. buy &amp; hold</h3>
+          <canvas id="equity-chart" height="150"></canvas>
+        </div>
+        <div class="chart-box">
+          <h3>Drawdown</h3>
+          <canvas id="drawdown-chart" height="150"></canvas>
+        </div>
+      </div>
+
+      <div class="grid2" style="margin-top:18px;">
+        <div class="chart-box">
+          <h3>Allocation</h3>
+          <canvas id="allocation-chart" height="150"></canvas>
+        </div>
+        <div class="chart-box">
+          <h3>Correlation</h3>
+          <div id="correlation"></div>
+        </div>
+      </div>
+
+      <div class="chart-box" style="margin-top:18px;">
+        <h3>Metrics</h3>
+        <div id="metrics-tables"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const pct = (x) => (x * 100).toFixed(2) + "%";
+    const num = (x) => x.toFixed(2);
+    const cls = (x) => (x >= 0 ? "pos" : "neg");
+
+    async function api(path, body) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      return data;
+    }
+
+    function parseHoldings() {
+      return $("holdings").value.trim().split("\n").map((line) => {
+        const [ticker, weight] = line.trim().split(/\s+/);
+        return { ticker, weight: parseFloat(weight) };
+      }).filter((h) => h.ticker && !isNaN(h.weight));
+    }
+
+    function dateParams() {
+      const p = {};
+      if ($("an-start").value) p.start = $("an-start").value;
+      if ($("an-end").value) p.end = $("an-end").value;
+      return p;
+    }
+
+    // ---- Tracked assets ----
+    async function loadAssets() {
+      const res = await fetch("/assets");
+      const assets = await res.json();
+      $("asset-chips").innerHTML = assets
+        .map((a) => `<span class="chip">${a.ticker} · ${a.kind}</span>`)
+        .join("");
+    }
+
+    // ---- Sync ----
+    $("sync-btn").onclick = async () => {
+      const ticker = $("sync-ticker").value.trim();
+      if (!ticker) return;
+      $("sync-status").textContent = "Fetching…";
+      try {
+        const params = new URLSearchParams({ start: $("sync-start").value });
+        const res = await fetch(`/assets/${ticker}/sync?` + params, { method: "POST" });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.detail);
+        $("sync-status").innerHTML = `<span class="pos">Stored ${d.rows_synced} rows (${d.start} → ${d.end}).</span>`;
+        loadAssets();
+      } catch (e) {
+        $("sync-status").innerHTML = `<span class="neg">${e.message}</span>`;
+      }
+    };
+
+    // ---- Charts (kept around so we can destroy/recreate) ----
+    const charts = {};
+    function draw(key, ctxId, config) {
+      if (charts[key]) charts[key].destroy();
+      charts[key] = new Chart($(ctxId), config);
+    }
+    const gridColor = "#27384a";
+    const axis = { grid: { color: gridColor }, ticks: { color: "#90a4b8" } };
+
+    // ---- Analyze ----
+    $("analyze-btn").onclick = async () => {
+      $("analyze-status").textContent = "Analyzing…";
+      try {
+        const body = { holdings: parseHoldings(), ...dateParams() };
+        const d = await api("/portfolio/analyze", body);
+        renderAllocation(d.weights);
+        renderCorrelation(d.correlation);
+        renderMetricsTable(d);
+        $("analyze-status").innerHTML = `<span class="muted">${d.period.trading_days} days · rf: ${d.risk_free}</span>`;
+      } catch (e) {
+        $("analyze-status").innerHTML = `<span class="neg">${e.message}</span>`;
+      }
+    };
+
+    function renderAllocation(weights) {
+      const labels = Object.keys(weights);
+      const data = labels.map((k) => +(weights[k] * 100).toFixed(2));
+      draw("allocation", "allocation-chart", {
+        type: "doughnut",
+        data: { labels, datasets: [{ data, backgroundColor: ["#4ea1ff", "#3ecf8e", "#ffb454", "#ff6b6b", "#b48ead", "#56c7d6"] }] },
+        options: { plugins: { legend: { labels: { color: "#e6edf3" } } } },
+      });
+    }
+
+    function corrColor(v) {
+      // -1 → blue, 0 → light, +1 → red
+      const r = v > 0 ? 255 : Math.round(255 + v * 120);
+      const b = v < 0 ? 255 : Math.round(255 - v * 120);
+      const g = Math.round(255 - Math.abs(v) * 120);
+      return `rgb(${r},${g},${b})`;
+    }
+    function renderCorrelation(corr) {
+      const tickers = Object.keys(corr);
+      let html = '<table class="heatmap"><thead><tr><th></th>' +
+        tickers.map((t) => `<th>${t.replace(".SA", "")}</th>`).join("") + "</tr></thead><tbody>";
+      for (const r of tickers) {
+        html += `<tr><th>${r.replace(".SA", "")}</th>` +
+          tickers.map((c) => {
+            const v = corr[r][c];
+            return `<td style="background:${corrColor(v)}">${v.toFixed(2)}</td>`;
+          }).join("") + "</tr>";
+      }
+      $("correlation").innerHTML = html + "</tbody></table>";
+    }
+
+    function metricsRow(name, m) {
+      return `<tr><td>${name}</td>
+        <td class="${cls(m.cumulative_return)}">${pct(m.cumulative_return)}</td>
+        <td class="${cls(m.annualized_return)}">${pct(m.annualized_return)}</td>
+        <td>${pct(m.annualized_volatility)}</td>
+        <td class="${cls(m.sharpe_ratio)}">${num(m.sharpe_ratio)}</td>
+        <td class="neg">${pct(m.max_drawdown)}</td></tr>`;
+    }
+    function metricsTable(rows) {
+      return `<table><thead><tr><th>Series</th><th>Cum.</th><th>Ann.</th>
+        <th>Vol</th><th>Sharpe</th><th>Max DD</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+    function renderMetricsTable(d) {
+      let rows = metricsRow("<b>Portfolio</b>", d.portfolio);
+      for (const t of Object.keys(d.assets)) rows += metricsRow(t, d.assets[t]);
+      $("metrics-tables").innerHTML = metricsTable(rows);
+    }
+
+    // ---- Backtest ----
+    $("bt-strategy").onchange = () => {
+      $("bt-ma").classList.toggle("hidden", $("bt-strategy").value !== "ma_crossover");
+    };
+
+    $("backtest-btn").onclick = async () => {
+      $("backtest-status").textContent = "Running…";
+      try {
+        const strategy = $("bt-strategy").value;
+        const body = { strategy, ...dateParams() };
+        if (strategy === "ma_crossover") {
+          body.ticker = $("bt-ticker").value.trim() || parseHoldings()[0]?.ticker;
+          body.short_window = +$("bt-short").value;
+          body.long_window = +$("bt-long").value;
+        } else {
+          body.holdings = parseHoldings();
+        }
+        const d = await api("/backtest", body);
+        renderBacktest(d);
+        $("backtest-status").innerHTML = `<span class="muted">${d.dates.length} days · rf: ${d.risk_free}</span>`;
+      } catch (e) {
+        $("backtest-status").innerHTML = `<span class="neg">${e.message}</span>`;
+      }
+    };
+
+    function renderBacktest(d) {
+      const labels = d.dates;
+      draw("equity", "equity-chart", {
+        type: "line",
+        data: { labels, datasets: [
+          { label: "Strategy", data: d.strategy.equity, borderColor: "#4ea1ff", borderWidth: 1.5, pointRadius: 0 },
+          { label: "Buy & hold", data: d.buy_and_hold.equity, borderColor: "#90a4b8", borderWidth: 1.5, pointRadius: 0 },
+        ] },
+        options: { scales: { x: axis, y: axis }, plugins: { legend: { labels: { color: "#e6edf3" } } } },
+      });
+      draw("drawdown", "drawdown-chart", {
+        type: "line",
+        data: { labels, datasets: [
+          { label: "Strategy", data: d.strategy.drawdown, borderColor: "#4ea1ff", borderWidth: 1.5, pointRadius: 0, fill: true, backgroundColor: "rgba(78,161,255,.12)" },
+          { label: "Buy & hold", data: d.buy_and_hold.drawdown, borderColor: "#90a4b8", borderWidth: 1.5, pointRadius: 0 },
+        ] },
+        options: { scales: { x: axis, y: axis }, plugins: { legend: { labels: { color: "#e6edf3" } } } },
+      });
+      const rows = metricsRow("<b>Strategy</b>", d.strategy.metrics) +
+        metricsRow("Buy & hold", d.buy_and_hold.metrics);
+      $("metrics-tables").innerHTML = metricsTable(rows);
+    }
+
+    loadAssets();
+  </script>
+</body>
+</html>
