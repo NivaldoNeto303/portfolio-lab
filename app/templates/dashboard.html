@@ -161,6 +161,26 @@ HGLG11.SA 0.3</textarea>
       $("asset-chips").innerHTML = assets
         .map((a) => `<span class="chip">${a.ticker} · ${a.kind}</span>`)
         .join("");
+      return assets.map((a) => a.ticker);
+    }
+
+    // Sync any referenced tickers that aren't in the DB yet, so Analyze and
+    // Backtest work without a manual sync step first.
+    async function ensureSynced(tickers, statusEl) {
+      const tracked = new Set(await loadAssets());
+      const wanted = [...new Set(tickers.map((t) => t.toUpperCase()).filter(Boolean))];
+      const missing = wanted.filter((t) => !tracked.has(t));
+      const start = $("an-start").value || $("sync-start").value;
+      for (const t of missing) {
+        if (statusEl) statusEl.innerHTML = `<span class="muted">Syncing ${t}…</span>`;
+        const params = new URLSearchParams(start ? { start } : {});
+        const r = await fetch(`/assets/${t}/sync?` + params, { method: "POST" });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(`Sync ${t} failed: ${e.detail || r.statusText}`);
+        }
+      }
+      if (missing.length) await loadAssets();
     }
 
     // ---- Sync ----
@@ -191,9 +211,11 @@ HGLG11.SA 0.3</textarea>
 
     // ---- Analyze ----
     $("analyze-btn").onclick = async () => {
-      $("analyze-status").textContent = "Analyzing…";
       try {
-        const body = { holdings: parseHoldings(), ...dateParams() };
+        const holdings = parseHoldings();
+        await ensureSynced(holdings.map((h) => h.ticker), $("analyze-status"));
+        $("analyze-status").textContent = "Analyzing…";
+        const body = { holdings, ...dateParams() };
         const d = await api("/portfolio/analyze", body);
         renderAllocation(d.weights);
         renderCorrelation(d.correlation);
@@ -259,17 +281,21 @@ HGLG11.SA 0.3</textarea>
     };
 
     $("backtest-btn").onclick = async () => {
-      $("backtest-status").textContent = "Running…";
       try {
         const strategy = $("bt-strategy").value;
         const body = { strategy, ...dateParams() };
+        let tickers;
         if (strategy === "ma_crossover") {
           body.ticker = $("bt-ticker").value.trim() || parseHoldings()[0]?.ticker;
           body.short_window = +$("bt-short").value;
           body.long_window = +$("bt-long").value;
+          tickers = [body.ticker];
         } else {
           body.holdings = parseHoldings();
+          tickers = body.holdings.map((h) => h.ticker);
         }
+        await ensureSynced(tickers, $("backtest-status"));
+        $("backtest-status").textContent = "Running…";
         const d = await api("/backtest", body);
         renderBacktest(d);
         $("backtest-status").innerHTML = `<span class="muted">${d.dates.length} days · rf: ${d.risk_free}</span>`;
