@@ -1,7 +1,11 @@
-fastapi
-uvicorn[standard]
-sqlmodel
-yfinance
+# Runtime
+fastapi==0.138.0
+uvicorn[standard]==0.49.0
+sqlmodel==0.0.39
+yfinance==1.5.1
+pandas==3.0.1
+numpy==2.4.3
+
 # Testing
-pytest
-httpx
+pytest==9.1.1
+httpx==0.28.1
