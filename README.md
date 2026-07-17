@@ -4,7 +4,7 @@ Aplicação web para **analisar e fazer backtest de carteiras de ações e FIIs 
 B3** — monte uma carteira, veja métricas de risco/retorno e descubra se uma
 estratégia teria batido o buy & hold, tudo num dashboard interativo.
 
-**Demo ao vivo:** [INSERIR URL DO RENDER]
+**Demo ao vivo:** https://portfolio-lab-ka1f.onrender.com
 ---
 
 ## O que faz
