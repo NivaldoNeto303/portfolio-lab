@@ -17,12 +17,11 @@ import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
-from app import backtest, data, metrics, tickers
+from app import backtest, data, metrics, seed, store, tickers
 from app.db import engine, get_session, init_db
-from app.models import Asset, AssetKind, Price
+from app.models import Asset, Price
 
 DASHBOARD_HTML = Path(__file__).parent / "templates" / "dashboard.html"
 
@@ -30,6 +29,10 @@ DASHBOARD_HTML = Path(__file__).parent / "templates" / "dashboard.html"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Offline-first: load the example-portfolio prices from the versioned seed
+    # when the DB is empty (e.g. a fresh Render container), so the dashboard
+    # always renders without hitting yfinance. User syncs still fetch live.
+    seed.seed_if_empty()
     yield
 
 
@@ -55,22 +58,6 @@ def search_tickers(
     return tickers.search(q, limit)
 
 
-def _infer_kind(ticker: str) -> AssetKind:
-    """Heuristic: B3 FII tickers end in ``11`` (e.g. HGLG11.SA)."""
-    base = ticker.upper().removesuffix(".SA")
-    return AssetKind.fii if base.endswith("11") else AssetKind.stock
-
-
-def _ensure_asset(session: Session, ticker: str) -> Asset:
-    asset = session.exec(select(Asset).where(Asset.ticker == ticker)).first()
-    if asset is None:
-        asset = Asset(ticker=ticker, kind=_infer_kind(ticker))
-        session.add(asset)
-        session.commit()
-        session.refresh(asset)
-    return asset
-
-
 @app.post("/assets/{ticker}/sync")
 def sync_asset(
     ticker: str,
@@ -84,10 +71,8 @@ def sync_asset(
     except data.DataError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    _ensure_asset(session, ticker)
+    store.ensure_asset(session, ticker)
 
-    # Upsert: on a (ticker, date) conflict, overwrite the OHLCV values. This is
-    # what makes a re-sync update rows in place instead of duplicating them.
     payload = [
         {
             "ticker": ticker,
@@ -101,20 +86,7 @@ def sync_asset(
         }
         for r in rows
     ]
-    stmt = sqlite_insert(Price).values(payload)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["ticker", "date"],
-        set_={
-            "open": stmt.excluded.open,
-            "high": stmt.excluded.high,
-            "low": stmt.excluded.low,
-            "close": stmt.excluded.close,
-            "adj_close": stmt.excluded.adj_close,
-            "volume": stmt.excluded.volume,
-        },
-    )
-    session.exec(stmt)
-    session.commit()
+    store.upsert_prices(session, payload)
 
     return {
         "ticker": ticker,
