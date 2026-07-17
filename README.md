@@ -5,15 +5,6 @@ B3** — monte uma carteira, veja métricas de risco/retorno e descubra se uma
 estratégia teria batido o buy & hold, tudo num dashboard interativo.
 
 **Demo ao vivo:** [INSERIR URL DO RENDER]
-
-> Projeto de portfólio para demonstrar duas competências ao mesmo tempo:
-> **engenharia de backend/dados** e **conhecimento do domínio financeiro**. O
-> design completo está em [`SPEC.md`](SPEC.md).
-
-![Dashboard do Portfolio Lab](docs/dashboard.png)
-
-<!-- Coloque a captura de tela em docs/dashboard.png (veja docs/README.md). -->
-
 ---
 
 ## O que faz
