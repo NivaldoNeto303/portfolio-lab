@@ -13,10 +13,17 @@ env/
 # Environment / secrets
 .env
 
-# Local database
+# Local database (the example portfolio is seeded from app/seed_data/, so the
+# .db file is disposable and never committed)
 *.db
+*.db.bak*
 *.sqlite
 *.sqlite3
+
+# Local presentation artifacts (kept on disk, not part of the codebase — the
+# README is the canonical project doc). Remove a line here to track a file.
+*.pdf
+RESUMO_SISTEMA.md
 
 # OS / editor
 .DS_Store
