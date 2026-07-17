@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
-from app import backtest, data, metrics
+from app import backtest, data, metrics, tickers
 from app.db import engine, get_session, init_db
 from app.models import Asset, AssetKind, Price
 
@@ -40,6 +40,19 @@ app = FastAPI(title="Portfolio Lab", lifespan=lifespan)
 def dashboard():
     """Serve the single-page Chart.js dashboard (Phase 4)."""
     return FileResponse(DASHBOARD_HTML)
+
+
+@app.get("/tickers")
+def search_tickers(
+    q: str = Query("", description="Case-insensitive ticker substring"),
+    limit: int = Query(15, ge=1, le=50),
+) -> dict:
+    """Autocomplete source for the ticker search box (Phase 5).
+
+    Filters the B3 universe (cached from brapi.dev, curated fallback offline).
+    Returns bare codes; the client appends the ``.SA`` Yahoo suffix.
+    """
+    return tickers.search(q, limit)
 
 
 def _infer_kind(ticker: str) -> AssetKind:
@@ -205,6 +218,19 @@ def _metrics_block(returns: pd.Series, rf_daily: float | pd.Series) -> dict:
     }
 
 
+def _annualized_rf(rf_daily: float | pd.Series) -> float:
+    """Annualize the daily risk-free rate for display (does not affect any metric).
+
+    Purely presentational: surfaces the CDI as an annual percentage so the
+    dashboard can contextualize returns against it.
+    """
+    if isinstance(rf_daily, pd.Series):
+        daily = float(rf_daily.mean()) if not rf_daily.empty else 0.0
+    else:
+        daily = float(rf_daily)
+    return (1.0 + daily) ** metrics.TRADING_DAYS - 1.0
+
+
 @app.post("/portfolio/analyze")
 def analyze_portfolio(
     req: AnalyzeRequest, session: Session = Depends(get_session)
@@ -257,6 +283,7 @@ def analyze_portfolio(
             "trading_days": int(len(returns_df)),
         },
         "risk_free": rf_note,
+        "risk_free_annual": _annualized_rf(rf_daily),
         "portfolio": _metrics_block(port_ret, rf_daily),
         "assets": per_asset,
         "correlation": {
@@ -298,6 +325,7 @@ def _backtest_result(
     dates = [ts.date().isoformat() for ts in strategy_ret.index]
     return {
         "risk_free": rf_note,
+        "risk_free_annual": _annualized_rf(rf_daily),
         "dates": dates,
         "strategy": {
             "metrics": _metrics_block(strategy_ret, rf_daily),
